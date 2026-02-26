@@ -1,0 +1,22 @@
+import { Component, Input } from '@angular/core';
+import { CommonModule } from '@angular/common';
+
+export type NotificationResultRow = {
+  fAlta: string;
+  fCoincide: string;
+  fechaMatch: string;
+  grupoAlerta: string;
+  sensibilidad: string;
+  gestionado: 'Si' | 'No';
+};
+
+@Component({
+  selector: 'app-notification-results-document',
+  standalone: true,
+  imports: [CommonModule],
+  templateUrl: './notification.results.document.component.html',
+  styleUrls: ['./notification.results.document.component.css'],
+})
+export class NotificationResultsDocumentComponent {
+  @Input() results: NotificationResultRow[] = [];
+}

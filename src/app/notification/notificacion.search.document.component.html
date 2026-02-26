@@ -1,0 +1,74 @@
+.scoreHead{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-weight:700;
+  margin-bottom:8px;
+}
+.t{ color:#e30000; white-space:nowrap; }
+.line{ flex:1; height:1px; background:#333; opacity:.6; }
+
+.scoreWrap{
+  display:grid;
+  grid-template-columns: 1fr auto;
+  gap:10px;
+  align-items:center;
+  padding: 2px 4px 0;
+}
+
+.scoreTable{
+  width:100%;
+  max-width:260px;
+  margin:0 auto;
+  border-collapse:separate;
+  border-spacing:0;
+}
+.scoreTable th, .scoreTable td{
+  border:1px solid #fff;
+  padding:10px 12px;
+  text-align:center;
+  font-size:16px;
+}
+.scoreTable th{ background:#dfe3e7; }
+.scoreTable td{ background:#e9ecef; }
+.scoreTable select{
+  width:90px;
+  height:34px;
+  border:1px solid #aaa;
+  background:#d0d4d8;
+  font-size:16px;
+}
+
+.saveIcon{
+  width:28px;
+  height:28px;
+  border:2px solid #e30000;
+  border-radius:3px;
+  background:#fff;
+  cursor:pointer;
+  position:relative;
+}
+.saveIcon:before{
+  content:"";
+  position:absolute;
+  left:6px; top:6px;
+  width:14px; height:10px;
+  border:2px solid #e30000;
+  background:#fff;
+}
+.saveIcon:after{
+  content:"";
+  position:absolute;
+  left:9px; bottom:6px;
+  width:10px; height:7px;
+  background:#e30000;
+}
+
+.scoreNote{
+  margin-top:10px;
+  font-size:15px;
+  padding-left:10px;
+  display:flex;
+  gap:10px;
+}
+.dot{ font-size:18px; line-height:1; }

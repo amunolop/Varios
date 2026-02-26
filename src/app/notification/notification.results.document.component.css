@@ -1,0 +1,35 @@
+<table class="grid" aria-label="Listado de notificaciones">
+  <thead>
+    <tr>
+      <th class="w1 clickable">F del alta (<span>clicable</span>)</th>
+      <th class="w2">F con las que coincide</th>
+      <th class="w3">Fecha del match</th>
+      <th class="w4">Grupo de Alerta</th>
+      <th class="w5">Sensibilidad de alertado</th>
+      <th class="w6">Gestionado SI/No</th>
+    </tr>
+  </thead>
+
+  <tbody>
+    <tr *ngFor="let r of results">
+      <td>{{ r.fAlta }}</td>
+      <td>{{ r.fCoincide }}</td>
+      <td>{{ r.fechaMatch }}</td>
+      <td>{{ r.grupoAlerta }}</td>
+      <td>{{ r.sensibilidad }}</td>
+      <td>
+        <div class="managed">
+          <select [value]="r.gestionado">
+            <option value="Si">Si</option>
+            <option value="No">No</option>
+          </select>
+          <div class="saveIcon" aria-label="Guardar" title="Guardar"></div>
+        </div>
+      </td>
+    </tr>
+
+    <tr *ngIf="results.length === 0">
+      <td colspan="6" class="empty">Sin resultados</td>
+    </tr>
+  </tbody>
+</table>

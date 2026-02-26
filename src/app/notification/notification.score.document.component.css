@@ -1,0 +1,26 @@
+import { Component, EventEmitter, Output } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+
+export type ScorePayload = {
+  scoreRange: string;   // ej: "[0,1]"
+  grupo: '1' | '2' | '3';
+};
+
+@Component({
+  selector: 'app-notification-score-document',
+  standalone: true,
+  imports: [CommonModule, FormsModule],
+  templateUrl: './notification.score.document.component.html',
+  styleUrls: ['./notification.score.document.component.css'],
+})
+export class NotificationScoreDocumentComponent {
+  @Output() scoreRequested = new EventEmitter<ScorePayload>();
+
+  scoreRange = '[0,1]';
+  grupo: ScorePayload['grupo'] = '1';
+
+  requestSave() {
+    this.scoreRequested.emit({ scoreRange: this.scoreRange, grupo: this.grupo });
+  }
+}
