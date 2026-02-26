@@ -1,0 +1,23 @@
+{
+  "separador": ";",
+  "columnas": [
+    { "nombre": "FECHA_ALTA",         "regex": "\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+", "nullable": false },
+    { "nombre": "ID",                 "regex": "\\d+",                              "nullable": false },
+    { "nombre": "RESERVA_ID",         "regex": "\\d+",                              "nullable": true  },
+    { "nombre": "PEP",                "regex": "[\\w/\\-\\.]+",                 "nullable": true  },
+    { "nombre": "REFERENCIA_GAC",     "regex": "[\\w\\-]+",                       "nullable": true  },
+    { "nombre": "REGISTRO",           "regex": ".+",                                  "nullable": true  },
+    { "nombre": "FINCA_REGISTRAL",    "regex": "\\d+",                              "nullable": true  },
+    { "nombre": "DIRECCION",          "regex": ".+",                                  "nullable": true  },
+    { "nombre": "LOCALIDAD",          "regex": "\\d+",                              "nullable": true  },
+    { "nombre": "PROVINCIA",          "regex": "\\d+",                              "nullable": true  },
+    { "nombre": "VBC",                "regex": "\\d+(\\.\\d+)?",                "nullable": true  },
+    { "nombre": "PRECIO_VENTA",       "regex": "\\d+(\\.\\d+)?",                "nullable": true  },
+    { "nombre": "BR",                 "regex": "\\d+",                              "nullable": true  },
+    { "nombre": "ID_FINCAS",         "regex": "\\d+",                              "nullable": true },
+    { "nombre": "ID_INMUEBLE",        "regex": "\\d+",                              "nullable": true },
+    { "nombre": "REGISTRO_PROPIEDAD", "regex": ".+",                                  "nullable": true  },
+    { "nombre": "COMENTARIOS",        "regex": ".+",                                  "nullable": true  },
+    { "nombre": "ID_UNICO",           "regex": ".+",                                  "nullable": true  }
+  ]
+}

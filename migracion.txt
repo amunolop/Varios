@@ -1,0 +1,400 @@
+import json
+import re
+import os
+import csv
+import logging
+from datetime import datetime
+
+
+# ─────────────────────────────────────────────
+#  Configuración de logging
+# ─────────────────────────────────────────────
+LOG_FILE = f"migracion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+log = logging.getLogger(__name__)
+
+# Centinela interno para valores NULL.
+# Se usa para distinguir un NULL real del string "null".
+# En el SQL final se reemplaza por NULL (sin comillas).
+_NULL_SENTINEL = "\x00NULL\x00"
+
+
+# ─────────────────────────────────────────────
+#  Motor principal
+# ─────────────────────────────────────────────
+class MotorMigracion:
+    def __init__(self):
+        # Líneas en bruto pendientes de validar (se acumulan entre cargas)
+        self.datos_raw: list[str] = []
+        self.config: dict | None = None
+        # Registros ya validados correctamente, listos para exportar a SQL
+        self.lineas_ok: list[dict] = []
+        # Plantilla SQL cargada una vez por sesión
+        self.plantilla_sql: str | None = None
+
+    # ──────────────────────────────────────────
+    #  Menú
+    # ──────────────────────────────────────────
+    def menu(self):
+        opciones = {
+            "1": ("Ingesta de datos (CSV) — se acumula con pendientes", self.ingesta_datos),
+            "2": ("Carga plantilla de validación (JSON)",               self.carga_plantilla),
+            "3": ("Validación de datos",                                self.validar_datos),
+            "4": ("Generación de SQLs",                                 self.generar_salida),
+            "5": ("Resumen del estado actual",                          self.mostrar_resumen),
+            "0": ("Salir",                                              None),
+        }
+
+        while True:
+            print("\n╔══════════════════════════════════════╗")
+            print("║     MOTOR DE MIGRACIÓN UNIVERSAL     ║")
+            print("╚══════════════════════════════════════╝")
+            for k, (desc, _) in opciones.items():
+                print(f"  {k}. {desc}")
+
+            opcion = input("\nSelecciona una opción: ").strip()
+
+            if opcion == "0":
+                log.info("Sesión finalizada por el usuario.")
+                break
+            elif opcion in opciones:
+                opciones[opcion][1]()
+            else:
+                print("❌ Opción no válida.")
+
+    # ──────────────────────────────────────────
+    #  1. Ingesta — ACUMULA, no reemplaza
+    # ──────────────────────────────────────────
+    def ingesta_datos(self):
+        ruta = input("Ruta del fichero CSV: ").strip()
+
+        if not os.path.exists(ruta):
+            log.error(f"Archivo no encontrado: {ruta}")
+            return
+
+        tiene_cabecera = input("¿El CSV tiene cabecera? (s/n): ").strip().lower() == "s"
+        encoding       = input("Encoding del fichero [utf-8]: ").strip() or "utf-8"
+
+        try:
+            with open(ruta, "r", encoding=encoding) as f:
+                lineas = [l.strip() for l in f if l.strip()]
+
+            if tiene_cabecera and lineas:
+                log.info(f"Cabecera ignorada: {lineas[0]}")
+                lineas = lineas[1:]
+
+            # ── ACUMULAR sobre las líneas pendientes existentes ──
+            previas = len(self.datos_raw)
+            self.datos_raw.extend(lineas)
+
+            log.info(
+                f"Añadidas {len(lineas)} líneas desde '{ruta}'. "
+                f"Total pendientes: {len(self.datos_raw)} "
+                f"(anteriores: {previas} + nuevas: {len(lineas)})."
+            )
+            self.mostrar_resumen()
+
+        except Exception as e:
+            log.error(f"Error al leer el fichero: {e}")
+
+    # ──────────────────────────────────────────
+    #  2. Carga plantilla JSON
+    # ──────────────────────────────────────────
+    def carga_plantilla(self):
+        ruta = input("Ruta del JSON de validación: ").strip()
+
+        try:
+            with open(ruta, "r", encoding="utf-8") as f:
+                config = json.load(f)
+
+            if "columnas" not in config:
+                raise ValueError("El JSON debe contener la clave 'columnas'.")
+            for col in config["columnas"]:
+                if "nombre" not in col or "regex" not in col:
+                    raise ValueError(f"Columna mal definida (falta 'nombre' o 'regex'): {col}")
+                # 'nullable' es opcional; si no está, se asume False
+                col.setdefault("nullable", False)
+
+            self.config = config
+            sep = self.config.get("separador", ";")
+            log.info(f"Plantilla cargada: {len(config['columnas'])} columnas, separador='{sep}'.")
+
+        except Exception as e:
+            log.error(f"Error al cargar JSON: {e}")
+
+    # ──────────────────────────────────────────
+    #  Validación interna de una línea
+    # ──────────────────────────────────────────
+    # ──────────────────────────────────────────
+    #  Normalización de campo entrecomillado
+    # ──────────────────────────────────────────
+    @staticmethod
+    def _normalizar_campo(valor: str, nombre_col: str, n_linea: int = 0) -> str:
+        """
+        Si el campo empieza con comilla doble:
+          · Con cierre → elimina ambas comillas y desdobla "" internas → "
+          · Sin cierre → añade la comilla de cierre, luego aplica lo anterior
+                         y registra un warning en el log.
+        Si no empieza con comilla doble → devuelve el valor sin cambios.
+        """
+        if not valor.startswith('"'):
+            return valor
+
+        if valor.endswith('"') and len(valor) >= 2:
+            # Cierre presente → extraer contenido interior
+            return valor[1:-1].replace('""', '"')
+        else:
+            # Cierre ausente → autocorrección
+            valor_corregido = valor[1:].replace('""', '"')
+            ref = f"línea {n_linea}, " if n_linea else ""
+            log.warning(
+                f"Campo '{nombre_col}' ({ref}valor='{valor}'): "
+                f"comilla de cierre ausente — corregido automáticamente."
+            )
+            return valor_corregido
+
+    def _validar_linea(self, linea: str, n_linea: int = 0) -> tuple[bool, dict | None, str]:
+        """
+        Devuelve (éxito, datos_mapeados, motivo_error).
+
+        Tratamiento de campos entrecomillados:
+        · Empieza con " y termina con " → se eliminan las comillas externas.
+          Las dobles comillas internas ("") se convierten en una sola (").
+        · Empieza con " pero falta la comilla de cierre → se añade
+          automáticamente y se registra un warning en el log.
+
+        Tratamiento de NULLs:
+        · Valor vacío ("") o literal "null"/"NULL" + nullable=true
+          → centinela _NULL_SENTINEL → SQL NULL (sin comillas).
+        · Valor vacío o "null"/"NULL" + nullable=false → KO.
+
+        Los valores no nulos se escapan para SQL (') antes de almacenarse.
+        """
+        sep      = self.config.get("separador", ";")
+        columnas = self.config["columnas"]
+        campos   = linea.split(sep)
+
+        if len(campos) != len(columnas):
+            return (
+                False, None,
+                f"Se esperaban {len(columnas)} campos, se encontraron {len(campos)}"
+            )
+
+        datos = {}
+        for idx, col in enumerate(columnas):
+            valor    = campos[idx].strip()
+            patron   = col["regex"]
+            nullable = col.get("nullable", False)
+
+            # ── Normalización de comillas dobles ───────────────
+            valor = self._normalizar_campo(valor, col["nombre"], n_linea)
+
+            # ── Detección de NULL ──────────────────────────────
+            es_nulo = valor == "" or valor.lower() == "null"
+
+            if es_nulo:
+                if nullable:
+                    datos[col["nombre"]] = _NULL_SENTINEL
+                    continue
+                else:
+                    return (
+                        False, None,
+                        f"Campo '{col['nombre']}' no permite NULL (nullable=false)"
+                    )
+
+            # ── Validación de regex para valores no nulos ──────
+            if not re.fullmatch(patron, valor):
+                return (
+                    False, None,
+                    f"Campo '{col['nombre']}' no cumple regex ({patron}): '{valor}'"
+                )
+
+            datos[col["nombre"]] = valor.replace("'", "''")
+
+        return True, datos, ""
+
+    # ──────────────────────────────────────────
+    #  3. Validación
+    #     · OK  → acumulados en self.lineas_ok
+    #     · KO  → exportados a CSV de errores y purgados de datos_raw
+    # ──────────────────────────────────────────
+    def validar_datos(self):
+        if not self.datos_raw:
+            print("❌ No hay líneas pendientes de validar. Carga un CSV (opción 1).")
+            return
+        if not self.config:
+            print("❌ Primero carga la plantilla JSON (opción 2).")
+            return
+
+        nuevas_ok: list[dict] = []
+        lineas_ko: list[dict] = []
+
+        for i, linea in enumerate(self.datos_raw, start=1):
+            exito, datos, motivo = self._validar_linea(linea, n_linea=i)
+            if exito:
+                nuevas_ok.append(datos)
+            else:
+                lineas_ko.append({"n_linea": i, "contenido": linea, "motivo": motivo})
+                log.warning(f"Línea {i} KO — {motivo}")
+
+        # ── Acumular registros válidos ──
+        self.lineas_ok.extend(nuevas_ok)
+
+        # ── Purgar datos_raw: las OK ya están en lineas_ok, las KO salen a CSV ──
+        self.datos_raw = []
+
+        # ── Exportar KO a CSV con columna de causa ──
+        if lineas_ko:
+            ruta_ko = self._exportar_csv_errores(lineas_ko)
+            print(f"\n⚠️  {len(lineas_ko)} línea(s) KO → '{ruta_ko}'")
+            print(    "   Corrígelas en ese fichero y recárgalas con la opción 1.")
+        else:
+            print("\n✅ Todas las líneas han pasado la validación.")
+
+        print(f"\n  Nuevas OK en esta pasada : {len(nuevas_ok)}")
+        print(f"  Total OK acumulados      : {len(self.lineas_ok)}")
+        self.mostrar_resumen()
+
+    # ──────────────────────────────────────────
+    #  Exportación de errores a CSV
+    # ──────────────────────────────────────────
+    def _exportar_csv_errores(self, lineas_ko: list[dict]) -> str:
+        """
+        Genera un CSV con las líneas fallidas más la columna ERROR_CAUSA al final.
+        Usa timestamp en el nombre para no sobrescribir pasadas anteriores.
+        """
+        sep      = self.config.get("separador", ";")
+        columnas = [col["nombre"] for col in self.config["columnas"]]
+        ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ruta     = f"errores_{ts}.csv"
+
+        with open(ruta, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f, delimiter=sep)
+            writer.writerow(columnas + ["ERROR_CAUSA"])
+            for ko in lineas_ko:
+                campos = ko["contenido"].split(sep)
+                while len(campos) < len(columnas):
+                    campos.append("")
+                writer.writerow(campos + [ko["motivo"]])
+
+        log.info(f"CSV de errores generado: '{ruta}' ({len(lineas_ko)} registros).")
+        return ruta
+
+    # ──────────────────────────────────────────
+    #  4. Generación de SQL
+    # ──────────────────────────────────────────
+    def generar_salida(self):
+        if not self.lineas_ok:
+            print("❌ No hay datos validados para exportar.")
+            return
+
+        # Cargar plantilla SQL solo si no está en sesión
+        if not self.plantilla_sql:
+            ruta_plantilla = input("Ruta de la plantilla SQL (.txt): ").strip()
+            if not os.path.exists(ruta_plantilla):
+                log.error(f"Plantilla SQL no encontrada: {ruta_plantilla}")
+                return
+            try:
+                with open(ruta_plantilla, "r", encoding="utf-8") as f:
+                    self.plantilla_sql = f.read()
+                log.info(f"Plantilla SQL cargada: '{ruta_plantilla}'.")
+            except Exception as e:
+                log.error(f"Error al leer la plantilla SQL: {e}")
+                return
+        else:
+            log.info("Reutilizando plantilla SQL de la sesión.")
+
+        nombre_salida = input("Nombre del fichero de salida [migracion_final.sql]: ").strip()
+        nombre_salida = nombre_salida or "migracion_final.sql"
+
+        batch_raw = input("Tamaño de bloque (0 = sin transacción, N = COMMIT cada N filas): ").strip()
+        try:
+            batch_size = int(batch_raw)
+            if batch_size < 0:
+                raise ValueError()
+        except ValueError:
+            print("❌ Valor no válido, se usará 0 (sin transacción).")
+            batch_size = 0
+
+        try:
+            plantilla = self.plantilla_sql
+
+            with open(nombre_salida, "w", encoding="utf-8") as f:
+                f.write(f"-- Migración generada : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"-- Registros OK       : {len(self.lineas_ok)}\n")
+                if batch_size == 0:
+                    f.write(f"-- Modo transacción   : ninguna\n\n")
+                else:
+                    f.write(f"-- Modo transacción   : batch de {batch_size} filas\n\n")
+
+                omitidos   = 0
+                insertados = 0
+
+                if batch_size > 0:
+                    f.write("BEGIN TRANSACTION;\n\n")
+
+                for d in self.lineas_ok:
+                    try:
+                        sql = plantilla.format(**d)
+
+                        # ── Renderizar NULLs ──────────────────────────────
+                        # El centinela puede aparecer con comillas ('...') si la
+                        # plantilla envuelve el campo en ellas, o sin comillas.
+                        # Se cubren ambos casos.
+                        sql = sql.replace(f"'{_NULL_SENTINEL}'", "NULL")
+                        sql = sql.replace(_NULL_SENTINEL, "NULL")
+
+                        f.write(sql + "\n")
+                        insertados += 1
+
+                        if batch_size > 0 and insertados % batch_size == 0:
+                            f.write(f"\nCOMMIT; -- batch {insertados // batch_size}\n")
+                            f.write("BEGIN TRANSACTION;\n\n")
+
+                    except KeyError as e:
+                        log.warning(f"Clave no encontrada en plantilla: {e}. Registro omitido.")
+                        omitidos += 1
+
+                if batch_size > 0:
+                    f.write("\nCOMMIT;\n")
+
+            insertados -= omitidos
+            log.info(f"SQL generado: '{nombre_salida}' ({insertados} sentencias).")
+            if omitidos:
+                log.warning(f"{omitidos} registros omitidos por claves faltantes en la plantilla.")
+
+            print(f"\n🚀 Fichero generado : '{nombre_salida}' ({insertados} sentencias)")
+            print(f"📋 Log de sesión    : '{LOG_FILE}'")
+
+        except Exception as e:
+            log.error(f"Error al generar el SQL: {e}")
+
+    # ──────────────────────────────────────────
+    #  5. Resumen
+    # ──────────────────────────────────────────
+    def mostrar_resumen(self):
+        pendientes = len(self.datos_raw)
+        ok         = len(self.lineas_ok)
+
+        print(f"\n{'─'*42}")
+        print(f"  ⏳ Pendientes de validar : {pendientes}")
+        print(f"  ✅ Validados (OK)        : {ok}")
+        if self.config:
+            print(f"  Columnas                 : {len(self.config['columnas'])}")
+            print(f"  Separador                : '{self.config.get('separador', ';')}'")
+        print(f"{'─'*42}")
+
+
+# ─────────────────────────────────────────────
+#  Entrypoint
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    MotorMigracion().menu()
