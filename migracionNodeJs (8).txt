@@ -1,0 +1,569 @@
+'use strict';
+
+/**
+ * Motor de Migración Universal — Node.js
+ * Equivalente funcional de migracion.py
+ * Requiere: Node.js 18+ · Sin dependencias externas
+ */
+
+const fs       = require('fs');
+const path     = require('path');
+const readline = require('readline');
+
+// ─────────────────────────────────────────────
+//  Logging (fichero + consola, igual que Python)
+// ─────────────────────────────────────────────
+const LOG_FILE = `migracion_${_tsFile()}.log`;
+
+function _tsFile() {
+  return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
+}
+function _tsLog() {
+  return new Date().toISOString().replace('T', ' ').slice(0, 23);
+}
+function _log(level, msg) {
+  const line = `${_tsLog()} [${level}] ${msg}`;
+  console.log(line);
+  fs.appendFileSync(LOG_FILE, line + '\n', 'utf8');
+}
+const log = {
+  info:    msg => _log('INFO',    msg),
+  warning: msg => _log('WARNING', msg),
+  error:   msg => _log('ERROR',   msg),
+};
+
+// ─────────────────────────────────────────────
+//  Centinela NULL
+//  Mismo valor que en Python para compatibilidad
+// ─────────────────────────────────────────────
+const NULL_SENTINEL = '\x00NULL\x00';
+
+// ─────────────────────────────────────────────
+//  Motor principal
+// ─────────────────────────────────────────────
+class MotorMigracion {
+  constructor() {
+    /** @type {string[]}  Líneas en bruto pendientes de validar */
+    this.datosRaw     = [];
+    /** @type {object|null} Config JSON cargada */
+    this.config       = null;
+    /** @type {object[]}  Registros validados listos para SQL */
+    this.lineasOk     = [];
+    /** @type {object[]}  Registros KO de la última validación, pendientes de reparar */
+    this.lineasKo     = [];
+    /** @type {boolean}  Modo usado en la última validación (false=completa, true=solo campos) */
+    this.soloCampos   = false;
+    /** @type {string|null} Plantilla SQL, cargada una vez por sesión */
+    this.plantillaSql = null;
+    /** @type {object}   RegExp compiladas por columna (caché) */
+    this._regexCache  = {};
+  }
+
+  // ── MENÚ ──────────────────────────────────────────────────────────────────
+  async menu() {
+    const rl  = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = q => new Promise(res => rl.question(q, res));
+
+    const opciones = {
+      '1': ['Ingesta de datos (CSV) — se acumula con pendientes', () => this.ingestaDatos(ask)],
+      '2': ['Carga plantilla de validación (JSON)',               () => this.cargaPlantilla(ask)],
+      '3': ['Validación de datos',                                        () => this.validarDatos(ask)],
+      '4': ['Reparar KO — re-parsear \';\' dentro de comillas',           () => this.repararKo()],
+      '5': ['Generación de SQLs',                                        () => this.generarSalida(ask)],
+      '6': ['Resumen del estado actual',                                  () => this.mostrarResumen()],
+      '0': ['Salir',                                             null],
+    };
+
+    while (true) {
+      console.log('\n╔══════════════════════════════════════╗');
+      console.log('║     MOTOR DE MIGRACIÓN UNIVERSAL     ║');
+      console.log('╚══════════════════════════════════════╝');
+      for (const [k, [desc]] of Object.entries(opciones)) {
+        console.log(`  ${k}. ${desc}`);
+      }
+
+      const opcion = (await ask('\nSelecciona una opción: ')).trim();
+
+      if (opcion === '0') {
+        log.info('Sesión finalizada por el usuario.');
+        rl.close();
+        break;
+      } else if (opciones[opcion]) {
+        await opciones[opcion][1]();
+      } else {
+        console.log('❌ Opción no válida.');
+      }
+    }
+  }
+
+  // ── 1. INGESTA ─────────────────────────────────────────────────────────────
+  async ingestaDatos(ask) {
+    const ruta = (await ask('Ruta del fichero CSV: ')).trim();
+
+    if (!fs.existsSync(ruta)) {
+      log.error(`Archivo no encontrado: ${ruta}`);
+      return;
+    }
+
+    const tieneCabecera = (await ask('¿El CSV tiene cabecera? (s/n): ')).trim().toLowerCase() === 's';
+    const encodingRaw   = (await ask('Encoding del fichero [utf8] (ansi/latin1/utf8/cp1252…): ')).trim() || 'utf8';
+    // ── Normalizar alias comunes ──────────────────────────────────────────────
+    const _ALIAS = {
+      'ansi':         'latin1',
+      'cp1252':       'latin1',
+      'windows-1252': 'latin1',
+      'win1252':      'latin1',
+      'iso-8859-1':   'latin1',
+      'latin-1':      'latin1',
+      'utf-8':        'utf8',
+      'utf8bom':      'utf8',   // Node ignora el BOM automáticamente
+    };
+    const encoding = _ALIAS[encodingRaw.toLowerCase()] ?? encodingRaw;
+    if (encoding !== encodingRaw) log.info(`Encoding '${encodingRaw}' normalizado a '${encoding}'.`);
+
+    try {
+      let lineas = fs.readFileSync(ruta, encoding)
+        .split('\n')
+        .map(l => l.trimEnd())   // conserva espacios internos, elimina \r
+        .filter(l => l.trim()); // descarta líneas vacías
+
+      if (tieneCabecera && lineas.length) {
+        log.info(`Cabecera ignorada: ${lineas[0]}`);
+        lineas = lineas.slice(1);
+      }
+
+      const previas = this.datosRaw.length;
+      this.datosRaw.push(...lineas);
+      log.info(
+        `Añadidas ${lineas.length} líneas desde '${ruta}'. ` +
+        `Total pendientes: ${this.datosRaw.length} ` +
+        `(anteriores: ${previas} + nuevas: ${lineas.length}).`
+      );
+      this.mostrarResumen();
+    } catch (e) {
+      log.error(`Error al leer el fichero: ${e.message}`);
+    }
+  }
+
+  // ── 2. CARGA PLANTILLA JSON ────────────────────────────────────────────────
+  async cargaPlantilla(ask) {
+    const ruta = (await ask('Ruta del JSON de validación: ')).trim();
+    try {
+      const config = JSON.parse(fs.readFileSync(ruta, 'utf8'));
+
+      if (!Array.isArray(config.columnas)) {
+        throw new Error("El JSON debe contener la clave 'columnas' (array).");
+      }
+      for (const col of config.columnas) {
+        if (!col.nombre || !col.regex) {
+          throw new Error(`Columna mal definida (falta 'nombre' o 'regex'): ${JSON.stringify(col)}`);
+        }
+        if (col.nullable === undefined) col.nullable = false;
+      }
+
+      this.config      = config;
+      this._regexCache = {};  // invalidar caché anterior
+
+      // Pre-compilar regex para rendimiento en ficheros grandes
+      for (const col of config.columnas) {
+        this._regexCache[col.nombre] = new RegExp(`^(?:${col.regex})$`);
+      }
+
+      const sep = config.separador || ';';
+      log.info(`Plantilla cargada: ${config.columnas.length} columnas, separador='${sep}'.`);
+    } catch (e) {
+      log.error(`Error al cargar JSON: ${e.message}`);
+    }
+  }
+
+  // ── NORMALIZACIÓN DE CAMPO ENTRECOMILLADO ──────────────────────────────────
+  /**
+   * Si el campo empieza con comilla doble:
+   *   · Con cierre → elimina ambas comillas y desdobla "" internas → "
+   *   · Sin cierre → añade la comilla de cierre y registra un warning.
+   * Si no empieza con comilla doble → devuelve el valor sin cambios.
+   */
+  static normalizarCampo(valor, nombreCol, nLinea = 0) {
+    if (!valor.startsWith('"')) return valor;
+
+    if (valor.endsWith('"') && valor.length >= 2) {
+      // Cierre presente → extraer contenido interior
+      return valor.slice(1, -1).replace(/""/g, '"');
+    } else {
+      // Cierre ausente → autocorrección
+      const corregido = valor.slice(1).replace(/""/g, '"');
+      const ref = nLinea ? `línea ${nLinea}, ` : '';
+      log.warning(
+        `Campo '${nombreCol}' (${ref}valor='${valor}'): ` +
+        `comilla de cierre ausente — corregido automáticamente.`
+      );
+      return corregido;
+    }
+  }
+
+  // ── VALIDACIÓN INTERNA DE UNA LÍNEA ───────────────────────────────────────
+  /**
+   * @returns {[boolean, object|null, string]} [éxito, datos, motivo_error]
+   *
+   * Tratamiento de campos entrecomillados:
+   *   · "valor"  → valor (comillas eliminadas, "" internas → ")
+   *   · "valor   → valor (cierre añadido automáticamente + warning)
+   *
+   * Tratamiento de NULLs:
+   *   · Vacío ("") o "null"/"NULL" + nullable=true → NULL_SENTINEL → SQL NULL
+   *   · Vacío o "null"/"NULL" + nullable=false → KO
+   *
+   * Valores no nulos → escape SQL (comilla simple) antes de almacenar.
+   */
+  /**
+   * Núcleo de validación — trabaja sobre una lista de campos YA PARTIDA.
+   * Llamado tanto por _validarLinea (split simple) como por repararKo
+   * (split consciente de comillas), evitando re-partir los campos.
+   */
+  _validarCampos(campos, nLinea = 0, soloCampos = false) {
+    const columnas = this.config.columnas;
+
+    if (campos.length !== columnas.length) {
+      return [false, null,
+        `Se esperaban ${columnas.length} campos, se encontraron ${campos.length}`];
+    }
+
+    // ── Modo solo campos ──────────────────────────────────────────────────
+    if (soloCampos) {
+      const datos = {};
+      for (let idx = 0; idx < columnas.length; idx++) {
+        let valor = campos[idx].trim();
+        valor = MotorMigracion.normalizarCampo(valor, columnas[idx].nombre, nLinea);
+        const esNulo = valor === '' || valor.toLowerCase() === 'null';
+        datos[columnas[idx].nombre] = esNulo ? NULL_SENTINEL : valor.replace(/'/g, "''");
+      }
+      return [true, datos, ''];
+    }
+
+    const datos = {};
+    for (let idx = 0; idx < columnas.length; idx++) {
+      const col      = columnas[idx];
+      let   valor    = campos[idx].trim();
+      const nullable = col.nullable ?? false;
+
+      // ── Normalización de comillas dobles ──────────────────────
+      valor = MotorMigracion.normalizarCampo(valor, col.nombre, nLinea);
+
+      // ── Detección de NULL ─────────────────────────────────────
+      const esNulo = valor === '' || valor.toLowerCase() === 'null';
+      if (esNulo) {
+        if (nullable) { datos[col.nombre] = NULL_SENTINEL; continue; }
+        else return [false, null, `Campo '${col.nombre}' no permite NULL (nullable=false)`];
+      }
+
+      // ── Validación de regex ───────────────────────────────────
+      const re = this._regexCache[col.nombre];
+      if (!re.test(valor)) {
+        return [false, null,
+          `Campo '${col.nombre}' no cumple regex (${col.regex}): '${valor}'`];
+      }
+
+      datos[col.nombre] = valor.replace(/'/g, "''");
+    }
+
+    return [true, datos, ''];
+  }
+
+  /**
+   * Parte la línea con split simple y delega en _validarCampos.
+   * Válido para líneas sin ';' dentro de comillas.
+   * Para líneas con ';' entre comillas usar repararKo (opción 4).
+   */
+  _validarLinea(linea, nLinea = 0, soloCampos = false) {
+    const sep    = this.config.separador || ';';
+    const campos = linea.split(sep);
+    return this._validarCampos(campos, nLinea, soloCampos);
+  }
+
+  // ── 3. VALIDACIÓN ─────────────────────────────────────────────────────────
+  async validarDatos(ask) {
+    if (!this.datosRaw.length) {
+      console.log('❌ No hay líneas pendientes de validar. Carga un CSV (opción 1).');
+      return;
+    }
+    if (!this.config) {
+      console.log('❌ Primero carga la plantilla JSON (opción 2).');
+      return;
+    }
+
+    console.log('\n  Modo de validación:');
+    console.log('    1. Completa   — número de campos + regex + nullable');
+    console.log('    2. Solo campos — únicamente verifica el número de columnas');
+    const modoInput  = (await ask('\n  Selecciona modo [1]: ')).trim() || '1';
+    const soloCampos = modoInput === '2';
+    this.soloCampos  = soloCampos;   // recordar para repararKo
+    const modoLabel  = soloCampos ? 'solo campos' : 'completa';
+    log.info(`Validación iniciada en modo: ${modoLabel} (${this.datosRaw.length} líneas).`);
+    console.log(`\n  Validando ${this.datosRaw.length} línea(s) en modo ${modoLabel}...\n`);
+
+    const nuevasOk = [];
+    const lineasKo = [];
+
+    for (let i = 0; i < this.datosRaw.length; i++) {
+      const [exito, datos, motivo] = this._validarLinea(this.datosRaw[i], i + 1, soloCampos);
+      if (exito) {
+        nuevasOk.push(datos);
+      } else {
+        lineasKo.push({ nLinea: i + 1, contenido: this.datosRaw[i], motivo });
+        // ── Mostrar error por pantalla Y en log con número de línea ──
+        const msg = `Línea ${i + 1} KO — ${motivo}`;
+        console.log(`  ❌ ${msg}`);
+        log.warning(msg);
+      }
+    }
+
+    this.lineasOk.push(...nuevasOk);
+    // Guardar KO en el objeto para que la opción 4 los procese sin fichero
+    this.lineasKo = lineasKo;
+    this.datosRaw = [];
+
+    if (lineasKo.length) {
+      const rutaKo = this._exportarCsvErrores(lineasKo);
+      console.log(`\n⚠️  ${lineasKo.length} línea(s) KO → '${rutaKo}'`);
+      console.log('   Opción 4 disponible para re-parsear con comillas.');
+    } else {
+      console.log('\n✅ Todas las líneas han pasado la validación.');
+    }
+
+    console.log(`\n  Nuevas OK en esta pasada : ${nuevasOk.length}`);
+    console.log(`  Total OK acumulados      : ${this.lineasOk.length}`);
+    this.mostrarResumen();
+  }
+
+  // ── EXPORTAR CSV ERRORES ──────────────────────────────────────────────────
+  /**
+   * Genera un CSV con las líneas fallidas más la columna ERROR_CAUSA al final.
+   * Timestamp en el nombre para no sobrescribir pasadas anteriores.
+   */
+  _exportarCsvErrores(lineasKo) {
+    const sep      = this.config.separador || ';';
+    const columnas = this.config.columnas.map(c => c.nombre);
+    const ts       = _tsFile();
+    const ruta     = `errores_${ts}.csv`;
+
+    // N_LINEA primero para localizar rápidamente el error en el CSV original
+    const filas = [columnas.concat('N_LINEA', 'ERROR_CAUSA').join(sep)];
+    for (const ko of lineasKo) {
+      const campos = ko.contenido.split(sep);
+      while (campos.length < columnas.length) campos.push('');
+      filas.push(campos.concat(ko.nLinea, ko.motivo).join(sep));
+    }
+    fs.writeFileSync(ruta, filas.join('\n'), 'utf8');
+    log.info(`CSV de errores generado: '${ruta}' (${lineasKo.length} registros).`);
+    return ruta;
+  }
+
+
+  // ── SPLIT CONSCIENTE DE COMILLAS ───────────────────────────────────────────
+  /**
+   * Divide la línea por el separador configurado, respetando los campos
+   * entre comillas dobles (RFC 4180). Los ';' dentro de '"..."' no cuentan
+   * como separador — se conservan como parte del valor del campo.
+   */
+  _splitRespetandoComillas(linea) {
+    const sep    = this.config.separador || ';';
+    const campos = [];
+    let   campo  = '';
+    let   inStr  = false;
+
+    for (let i = 0; i < linea.length; i++) {
+      const ch = linea[i];
+      if (inStr) {
+        if (ch === '"') {
+          // Comilla de cierre (o "" interna → se conserva una)
+          if (linea[i + 1] === '"') { campo += '"'; i++; }
+          else inStr = false;
+        } else {
+          campo += ch;
+        }
+      } else {
+        if (ch === '"') {
+          inStr = true;
+        } else if (ch === sep) {
+          campos.push(campo); campo = '';
+        } else {
+          campo += ch;
+        }
+      }
+    }
+    campos.push(campo);
+    return campos;
+  }
+
+  // ── 4. REPARAR KO ──────────────────────────────────────────────────────────
+  /**
+   * Lee un CSV de errores generado por este motor, re-parsea cada línea
+   * usando split consciente de comillas (los ';' dentro de '"..."' no
+   * cuentan como separador) y vuelve a validar.
+   *
+   * · Líneas que ahora cuadran → validación completa → lineasOk
+   * · Líneas que siguen fallando → nuevo CSV de errores
+   */
+  async repararKo() {
+    if (!this.config) {
+      console.log('❌ Primero carga la plantilla JSON (opción 2).');
+      return;
+    }
+    if (!this.lineasKo.length) {
+      console.log('❌ No hay líneas KO en memoria. Ejecuta primero la opción 3 (Validación).');
+      return;
+    }
+
+    const sep   = this.config.separador || ';';
+    const nCols = this.config.columnas.length;
+
+    const modoLabel = this.soloCampos ? 'solo campos' : 'completa';
+    log.info(`Reparando ${this.lineasKo.length} línea(s) KO — modo: ${modoLabel}.`);
+    console.log(`\n  Re-parseando ${this.lineasKo.length} línea(s) KO en memoria (modo ${modoLabel})...\n`);
+
+    const nuevasOk = [];
+    const siguenKo = [];
+
+    for (const ko of this.lineasKo) {
+      const { nLinea, contenido } = ko;
+      // Usar split consciente de comillas y validar los campos directamente
+      // sin reconstruir la línea (evita que ';' dentro de campos vuelvan a romper)
+      const campos      = this._splitRespetandoComillas(contenido);
+      // Descartar columnas extra del CSV de errores (N_LINEA, ERROR_CAUSA)
+      const camposDatos = campos.slice(0, nCols);
+
+      // Pasar los campos ya partidos directamente a _validarCampos
+      const [exito, datos, motivo] = this._validarCampos(camposDatos, nLinea, this.soloCampos);
+      if (exito) {
+        nuevasOk.push(datos);
+        log.info(`Línea ${nLinea} reparada OK.`);
+      } else {
+        siguenKo.push({ nLinea, contenido, motivo });
+        const msg = `Línea ${nLinea} KO — ${motivo}`;
+        console.log(`  ❌ ${msg}`);
+        log.warning(msg);
+      }
+    }
+
+    this.lineasOk.push(...nuevasOk);
+    // Actualizar lineasKo con solo los que siguen fallando
+    this.lineasKo = siguenKo;
+
+    if (siguenKo.length) {
+      const rutaKo = this._exportarCsvErrores(siguenKo);
+      console.log(`\n⚠️  ${siguenKo.length} línea(s) siguen KO → '${rutaKo}'`);
+    } else {
+      console.log('\n✅ Todas las líneas KO han sido reparadas.');
+    }
+
+    console.log(`\n  Reparadas y OK     : ${nuevasOk.length}`);
+    console.log(`  Siguen KO          : ${siguenKo.length}`);
+    console.log(`  Total OK acumulados: ${this.lineasOk.length}`);
+    this.mostrarResumen();
+  }
+
+  // ── 5. GENERACIÓN DE SQL ──────────────────────────────────────────────────
+  async generarSalida(ask) {
+    if (!this.lineasOk.length) {
+      console.log('❌ No hay datos validados para exportar.');
+      return;
+    }
+
+    if (!this.plantillaSql) {
+      const rutaP = (await ask('Ruta de la plantilla SQL (.txt): ')).trim();
+      if (!fs.existsSync(rutaP)) {
+        log.error(`Plantilla SQL no encontrada: ${rutaP}`);
+        return;
+      }
+      try {
+        this.plantillaSql = fs.readFileSync(rutaP, 'utf8');
+        log.info(`Plantilla SQL cargada: '${rutaP}'.`);
+      } catch (e) {
+        log.error(`Error al leer la plantilla SQL: ${e.message}`);
+        return;
+      }
+    } else {
+      log.info('Reutilizando plantilla SQL de la sesión.');
+    }
+
+    const nombreSalida = ((await ask('Nombre del fichero de salida [migracion_final.sql]: ')).trim())
+      || 'migracion_final.sql';
+
+    const batchRaw  = (await ask('Tamaño de bloque (0 = sin transacción, N = COMMIT cada N filas): ')).trim();
+    const batchSize = Math.max(0, parseInt(batchRaw, 10) || 0);
+
+    // Sustitución de plantilla: reemplaza {CLAVE} con el valor del registro
+    const _aplicarPlantilla = (plantilla, datos) =>
+      plantilla.replace(/\{(\w+)\}/g, (match, clave) => {
+        if (!(clave in datos)) throw new Error(`Clave faltante en plantilla: ${clave}`);
+        return datos[clave];
+      });
+
+    // Renderizado de NULLs: el centinela puede ir entre comillas o no
+    const _renderNull = sql =>
+      sql.split(`'${NULL_SENTINEL}'`).join('NULL')
+         .split(NULL_SENTINEL).join('NULL');
+
+    try {
+      const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      const lineas = [
+        `-- Migración generada : ${now}`,
+        `-- Registros OK       : ${this.lineasOk.length}`,
+        `-- Modo transacción   : ${batchSize > 0 ? `batch de ${batchSize} filas` : 'ninguna'}`,
+        '',
+      ];
+
+      let insertados = 0, omitidos = 0;
+      if (batchSize > 0) lineas.push('BEGIN TRANSACTION;', '');
+
+      for (const d of this.lineasOk) {
+        try {
+          const sql = _renderNull(_aplicarPlantilla(this.plantillaSql, d));
+          lineas.push(sql);
+          insertados++;
+          if (batchSize > 0 && insertados % batchSize === 0) {
+            lineas.push('', `COMMIT; -- batch ${insertados / batchSize}`, 'BEGIN TRANSACTION;', '');
+          }
+        } catch (e) {
+          log.warning(`${e.message}. Registro omitido.`);
+          omitidos++;
+        }
+      }
+
+      if (batchSize > 0) lineas.push('', 'COMMIT;');
+
+      fs.writeFileSync(nombreSalida, lineas.join('\n'), 'utf8');
+
+      const total = insertados - omitidos;
+      log.info(`SQL generado: '${nombreSalida}' (${total} sentencias).`);
+      if (omitidos) log.warning(`${omitidos} registros omitidos por claves faltantes en la plantilla.`);
+
+      console.log(`\n🚀 Fichero generado : '${nombreSalida}' (${total} sentencias)`);
+      console.log(`📋 Log de sesión    : '${LOG_FILE}'`);
+    } catch (e) {
+      log.error(`Error al generar el SQL: ${e.message}`);
+    }
+  }
+
+  // ── 5. RESUMEN ────────────────────────────────────────────────────────────
+  mostrarResumen() {
+    console.log(`\n${'─'.repeat(42)}`);
+    console.log(`  ⏳ Pendientes de validar : ${this.datosRaw.length}`);
+    console.log(`  ✅ Validados (OK)        : ${this.lineasOk.length}`);
+    console.log(`  ❌ KO en memoria         : ${this.lineasKo.length}`);
+    console.log(`  🔍 Modo validación       : ${this.soloCampos ? 'solo campos' : 'completa'}`);
+    if (this.config) {
+      console.log(`  Columnas                 : ${this.config.columnas.length}`);
+      console.log(`  Separador                : '${this.config.separador || ';'}'`);
+    }
+    console.log('─'.repeat(42));
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Entrypoint
+// ─────────────────────────────────────────────
+new MotorMigracion().menu().catch(e => {
+  console.error('Error fatal:', e.message);
+  process.exit(1);
+});
