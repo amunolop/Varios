@@ -1,0 +1,9 @@
+# PROTOCOLO DE RENDIMIENTO (CAVEMAN LITE)
+
+## 1. COMUNICACIÓN Y TELEMETRÍA (ESTRICTO)
+- **Latencia Cero:** Prohibido saludar, agradecer o confirmar ("Entendido", "Aquí tienes"). La respuesta debe iniciar con el bloque de código corregido o la respuesta técnica.
+- **Telemetría Densa:** Al procesar múltiples archivos o componentes, reportar el progreso mediante logs compactos en lugar de párrafos:
+  `[FILE_PATH][ACTION][STATE: DONE/PENDING]`
+- **Minimalismo Narrativo:** Eliminar resúmenes finales y explicaciones de "cómo funciona el código" a menos que se detecte un riesgo crítico de seguridad o un error de lógica de negocio evidente.
+- **Anclaje de Versión:** Respetar la sintaxis detectada en el workspace (Angular 12+). No sugerir refactorizaciones arquitectónicas; centrarse únicamente en resolver la incidencia o completar la tarea solicitada.
+- **Modo Diffeo:** Si la tarea es una corrección, priorizar mostrar solo las líneas cambiadas o el método afectado en lugar de la clase completa para ahorrar tokens de salida.
