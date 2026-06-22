@@ -1,0 +1,189 @@
+INDICACIONES PARA LA EVALUACIÓN DEL TRABAJO FIN DE MÁSTER
+Migración semántica del "back" de una aplicación web legacy mediante un sistema multi-agente de IA
+Autor: Antonio Muñoz López  ·  antoniomunozlopez@gmail.com  ·  GitHub: amunolop
+=====================================================================================
+
+Buenas, a continuación dejo todo lo necesario para que podáis evaluar el proyecto: la
+idea, los dos repositorios (público y privado), los accesos, las dos aplicaciones
+desplegadas para comprobar la migración en vivo y un mini-manual de pruebas. He intentado
+que sea lo más claro y autocontenido posible; cualquier cabo que haya dejado suelto,
+escribidme y lo resuelvo enseguida.
+
+
+1. IDEA DEL PROYECTO
+--------------------
+El objetivo es conseguir la *migración semántica* del back de una aplicación web legacy
+empleando un sistema de agentes de IA (sobre Claude Code) gobernado por la ingeniería del
+software. La tesis central es que aplicar ingeniería del software (arquitectura por capas,
+SOLID, TDD, tests E2E) no es la meta, sino el MEDIO que permite a la IA extraer la
+semántica del legacy y generar código de alta calidad y de forma no aleatoria: a cada
+agente se le da una capa concreta que comprender (dominio, aplicación, infraestructura,
+transporte) y se le exige escribir con buenas prácticas, lo que hace su comportamiento más
+predecible y acota los errores.
+
+La idea original era migrar aplicaciones web completas. En el alcance real de este TFM he
+podido cumplir con la migración del BACK (preservando el front legacy y el contrato que ya
+consumía), que es además la pieza que de otro modo resulta inabordable. Se deja
+documentado todo el proceso y todas las pruebas que se fueron realizando.
+
+
+2. LOS DOS REPOSITORIOS (público y privado)
+-------------------------------------------
+El trabajo se ha separado en dos repositorios por un motivo de derechos que explico abajo:
+
+  A) PÚBLICO — el MÉTODO (open source)
+     https://github.com/amunolop/agentic-legacy-migration-system
+     Es el procedimiento de migración en sí: un proceso reproducible para migrar sistemas
+     legacy "muertos" con IA, articulado en tres ficheros .md (orquestador + motor +
+     plantilla) que se le entregan a un agente de IA. Incluye un ejemplo ejecutable y
+     certificable de extremo a extremo (un .sh de remesas SEPA migrado a Python, en
+     ejemplos/sepa-sh/) y un caso web ilustrativo y anonimizado. Licencias: Apache-2.0
+     para el código y CC BY 4.0 para la documentación (declaradas en su README y LICENSE).
+
+  B) PRIVADO — el método APLICADO a la migración real de WebDTE
+     https://github.com/amunolop/agentic-legacy-migration
+     Es la migración concreta del back de una aplicación web legacy que yo mismo desarrollé
+     hace 20 años como Proyecto Fin de Carrera. Contiene todo el detalle (fases, ejecuciones,
+     tests, decisiones) y la aplicación original. Su LICENSE es de "todos los derechos
+     reservados" (repositorio privado).
+
+  ¿Por qué dos repos? Elegí mi antiguo PFC como banco de pruebas porque cumplía justo lo que
+  necesitaba para probar una migración real: código antiguo, no estructurado, "spaghetti",
+  un único paquete, etc. Al terminar me di cuenta de que ese proyecto podía entrar en
+  conflicto con derechos de la Universidad de Málaga, ya que contiene referencias, logos e
+  imágenes de la facultad. Por eso la migración detallada (con ese material) se mantiene como
+  repositorio PRIVADO, y el método de migración —reutilizable y sin material de terceros— se
+  publica como repositorio PÚBLICO.
+
+  Nota sobre el banco de pruebas: como ejemplo público y reproducible, el repositorio abierto
+  usa la migración de un .sh (SEPA) en lugar de la app web, precisamente para no arrastrar
+  ninguna referencia con derechos.
+
+
+3. ACCESO PARA LA EVALUACIÓN
+----------------------------
+  - Repositorio PÚBLICO: acceso libre, no requiere nada.
+  - Repositorio PRIVADO: he añadido a "mouredev" como colaborador para que podáis acceder a
+    todo el detalle. Si algún evaluador necesita acceso con su propia cuenta de GitHub, que
+    me lo indique por correo y lo añado al momento.
+  - Aplicaciones desplegadas: protegidas con usuario/contraseña (ver punto 5).
+
+
+4. COMPROBACIÓN EN VIVO: LAS DOS APLICACIONES
+---------------------------------------------
+Para demostrar que una aplicación web legacy en Java (servlets sobre Tomcat) puede migrarse
+a otra arquitectura y lenguaje, se han habilitado dos URLs con la MISMA aplicación pero con
+un back completamente distinto:
+
+  - App Java legacy (original, adaptada a Docker; se subsanaron problemas de JavaMail con
+    TLS y de codificación que arrastraba):
+        https://oyster-app-sxqf2.ondigitalocean.app/WebDTE/servlets/WebDTE
+
+  - App con el back migrado a Python:
+        https://octopus-app-ym2jf.ondigitalocean.app/WebDTE/servlets/WebDTE
+
+Conviene ser realista: como aplicación, su funcionalidad (gestión de planes de estudio ya
+antiguos) tiene poco interés en sí misma. Lo relevante no es lo que hace, sino que, al
+acceder a las dos, se comprueba que una app Java se ha podido migrar a Python con el MISMO
+comportamiento de cara al usuario y un back que no se parece en nada al original.
+
+
+5. MINI-MANUAL DE PRUEBAS DEL APLICATIVO
+----------------------------------------
+Paso 1 — Acceso (escudo de autenticación)
+  Al abrir cualquiera de las dos URLs, el navegador pedirá usuario y contraseña. Es un
+  escudo perimetral que he añadido para que las aplicaciones no queden expuestas
+  públicamente (de nuevo, por el tema de logos/derechos). NO es el login de la aplicación.
+        Usuario:      dteadmin
+        Contraseña:   S0TPYjxS3YR1ca0yHiHeLnIW
+  (Se accede por HTTPS, así que las credenciales viajan cifradas.)
+
+Paso 2 — Login dentro de la aplicación (WebDTE)
+  Una vez dentro, la propia aplicación tiene su login. Podéis entrar con dos perfiles:
+        Administrador (secretaría del departamento):   admin / malaga
+        Alumno:                                         amunolop / malaga
+
+Paso 3 — Qué comprobar (el objetivo de la prueba)
+  1) Abrid las DOS URLs, a ser posible en paralelo (dos pestañas/ventanas).
+  2) Iniciad sesión en ambas con el mismo perfil y realizad las MISMAS operaciones:
+     navegad por las mismas pantallas y repetid las mismas acciones/consultas.
+  3) Verificad que el comportamiento y las respuestas son equivalentes en las dos.
+  La clave: ambas se comportan igual, pero una es Java/servlets sobre Tomcat y la otra es
+  Python; el código del back no se parece en nada. Esa equivalencia es la demostración de
+  que la migración semántica del back ha sido posible.
+
+Nota práctica sobre el login
+  El navegador recuerda las credenciales del escudo (Paso 1) por dominio durante la sesión.
+  Como son dos dominios distintos, cada URL las pedirá por separado. Si en algún momento no
+  os vuelve a pedir y queréis verlo "desde cero", usad una ventana de incógnito.
+
+Para auditar la metodología en detalle (opcional)
+  - Ejemplo ejecutable y certificable de extremo a extremo: repo PÚBLICO, carpeta
+    ejemplos/sepa-sh/ (incluye certificación y tests). Checklist del proceso en
+    documentacion/MigrationPlaybook.md. Casos de referencia: caso_ilustrativo_web.md (web)
+    y caso_referencia_sepa.md (batch).
+  - Detalle completo de la migración de WebDTE (fases, ejecuciones, tests, decisiones):
+    repo PRIVADO.
+
+
+6. INCIDENCIAS Y CONTACTO
+-------------------------
+Cualquier problema que detectéis, o cualquier acceso que haya que ampliar (sobre todo en el
+repositorio PRIVADO), escribidme a:
+        antoniomunozlopez@gmail.com
+Seguro que algún cabo me he dejado suelto y lo resolveré lo antes posible. Y, si os es
+posible, agradecería que me avisarais por correo cuando finalicéis la comprobación del
+aplicativo, para poder archivarlo.
+
+
+7. UNA REFLEXIÓN PERSONAL
+-------------------------
+Como hace 20 años, cuando hice mi Proyecto Fin de Carrera, esto ha vuelto a ser una
+auténtica (y bendita) locura. Y, aunque gracias a la IA seamos capaces de sacar adelante
+proyectos que años atrás parecían imposibles, he vuelto a tener las mismas sensaciones de
+programador de entonces: ilusión, frustración, cansancio y esperanza, en ese orden y en
+bucle. Por eso, según mi experiencia, la IA no elimina el trabajo del programador: lo cambia
+de ámbito. ¿Quién me iba a decir hace 20 años que se podría hacer un despliegue sin pasar
+horas y horas configurando servidores, variables de sistema y permisos de usuario?
+
+Espero que mi experiencia sea útil. Me gustaría remarcar que la IA abre una vía aún poco
+explorada dentro de un campo viejo y arduo —la migración de aplicaciones legacy—: usar
+sistemas de agentes para analizar y extraer la semántica del código, y no solo para
+generarlo. Es lo que aquí he pretendido explorar. Por experiencia, la falta de criterio en
+muchas de estas migraciones ha sido un auténtico dolor de cabeza para bastante gente del
+sector de la consultoría informática; y, sobre todo, quiero poner en valor ese uso de la IA
+para el análisis y la extracción de semántica, no solo para escribir código.
+
+Durante estos meses, la IA —a través de sus múltiples agentes y conversaciones— ha sido una
+compañera incansable con la que he podido definir el proyecto, hacer brainstorming,
+investigar y documentar. No se trata de que nos sustituya, sino de trabajar con ella para
+obtener los mejores resultados. Y, como se ve en los resultados de las
+migraciones realizadas, para conseguirlo es imprescindible tener el mayor conocimiento
+posible de programación, de ingeniería del software y de buenas prácticas: es justo
+entonces cuando se aprovecha todo el potencial de la IA y se pueden lograr grandes
+resultados.
+
+Y, ya en el terreno de las peripecias, hubo una que no esperaba y que merece mención
+propia: durante los meses del proyecto, las herramientas de IA fueron un blanco tan móvil
+como el propio código legacy que estaba migrando. Me tocó vivir el cambio continuo de los
+planes de los operadores de IA, quedarme sin tokens en plena faena dentro de Claude Code y
+el vaivén constante de modelos: el fiasco —para mi experiencia— de Opus 4.7, el paso fugaz
+de Fable, y la necesidad de buscar alternativas que me llevó a descubrir MiniMax (con
+OpenCode), MiMo y alguna más. Trabajar así, con el suelo moviéndose, fue agotador a ratos.
+
+Lejos de ser una simple anécdota, esto acabó siendo una lección de fondo y, en mi opinión,
+la más valiosa: si la frontera se mueve bajo tus pies —cambian precios, límites y modelos
+casi de un día para otro—, no puedes casar el trabajo con un único proveedor ni con un único
+modelo. Y, curiosamente, esa misma conclusión es la que sostiene el diseño del método de
+este proyecto: el proceso es agnóstico del modelo y el motor reparte el trabajo por roles
+(comprensión "cara y escasa" frente a escritura "barata y masiva"), de modo que puede
+adaptarse al modelo o al operador que toque en cada momento. Vivir esa inestabilidad en
+primera persona terminó reforzando, sin pretenderlo, la propia tesis del trabajo: lo que
+perdura no es la herramienta concreta, sino el criterio y el método con el que la usas.
+
+Termino vaciado y agotado, no lo voy a negar. Pero también muy contento de haber
+participado en este viaje con vosotros; en parte, me ha cambiado la vida. Espero, cuando me
+recupere, poder seguir en este camino y continuar aprendiendo.
+
+Gracias por vuestro tiempo.
+Antonio Muñoz López
