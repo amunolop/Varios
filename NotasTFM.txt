@@ -1,7 +1,8 @@
 INDICACIONES PARA LA EVALUACIÓN DEL TRABAJO FIN DE MÁSTER
 Migración semántica del "back" de una aplicación web legacy mediante un sistema multi-agente de IA
 Autor: Antonio Muñoz López  ·  antoniomunozlopez@gmail.com  ·  GitHub: amunolop
-Ruta Memoria del Proyecto: https://github.com/amunolop/agentic-legacy-migration/blob/main/docs/TFM/TFM_completo.pdf
+Ruta Memoria del Proyecto: https://github.com/amunolop/agentic-legacy-migration/blob/main/docs/TFM/TFM_completo.pdf (Hace falta ser colaborador de ese proyecto privado para  visualizarlo)
+IMPORTANTE: Para solicitar accesos al repositorio privado (aparte de mouredev) avisarme a  antoniomunozlopez@gmail.com e indicarme cuenta github. 
 =====================================================================================
 
 Buenas, a continuación dejo todo lo necesario para que podáis evaluar el proyecto: la
